@@ -6,21 +6,37 @@
 
 ## Installation
 
-**With [pipx](https://pipx.pypa.io/) (recommended):**
+**Ubuntu / Debian:**
 
 ```bash
+sudo apt install pipx
+pipx ensurepath   # adds ~/.local/bin to PATH (one-time setup, restart terminal after)
 pipx install shrip
 ```
 
-> pipx installs `shrip` in an isolated environment and adds it to your PATH automatically. Install pipx with `pip install pipx` or see the [pipx docs](https://pipx.pypa.io/stable/installation/).
+**macOS:**
 
-**With pip:**
+```bash
+brew install pipx
+pipx ensurepath
+pipx install shrip
+```
+
+**Windows:**
+
+```bash
+pip install pipx
+pipx ensurepath
+pipx install shrip
+```
+
+**With pip (any OS):**
 
 ```bash
 pip install shrip
 ```
 
-> On Linux/macOS you may need `pip install --user shrip` if not using a virtual environment. Make sure `~/.local/bin` is on your PATH.
+> On Ubuntu 23.04+ and other modern distros, `pip install` is blocked by default to protect the system Python. Use `pipx` instead — it installs `shrip` in an isolated environment and adds it to your PATH automatically.
 
 **From GitHub:**
 

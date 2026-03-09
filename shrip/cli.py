@@ -7,7 +7,9 @@ import webbrowser
 from pathlib import Path
 from typing import Annotated, List, Optional, Union
 
+import click
 import typer
+import typer.core
 from rich.console import Console
 from rich.panel import Panel
 from rich.progress import (
@@ -22,6 +24,17 @@ from rich.progress import (
 from shrip import __version__
 from shrip.archive import create_archive, sanitize_name
 from shrip.upload import UploadError, upload_to_gofile
+
+
+class _ArgsFirstCommand(typer.core.TyperCommand):
+    """Show positional args before [OPTIONS] in the usage line."""
+
+    def format_usage(self, ctx: click.Context, formatter: click.HelpFormatter) -> None:
+        pieces = self.collect_usage_pieces(ctx)
+        args = [p for p in pieces if p != "[OPTIONS]"]
+        opts = [p for p in pieces if p == "[OPTIONS]"]
+        formatter.write_usage(ctx.command_path, " ".join(args + opts))
+
 
 app = typer.Typer(
     name="shrip",
@@ -101,7 +114,7 @@ def _version_callback(value: bool) -> None:
         raise typer.Exit()
 
 
-@app.command()
+@app.command(cls=_ArgsFirstCommand)
 def main(
     paths: Annotated[
         List[Path],
