@@ -24,6 +24,7 @@ from rich.progress import (
     SpinnerColumn,
     TaskProgressColumn,
     TextColumn,
+    TimeElapsedColumn,
     TransferSpeedColumn,
 )
 
@@ -483,6 +484,7 @@ def main(
             BarColumn(),
             TaskProgressColumn(),
             DownloadColumn(),
+            TimeElapsedColumn(),
             console=console,
             disable=json_mode,
         ) as progress:
@@ -530,6 +532,7 @@ def main(
             BarColumn(),
             DownloadColumn(),
             TransferSpeedColumn(),
+            TimeElapsedColumn(),
             console=console,
             disable=json_mode,
         ) as progress:
