@@ -35,3 +35,4 @@ env/
 CLAUDE.md
 /docs/
 /tests/
+/.claude/
