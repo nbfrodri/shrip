@@ -73,14 +73,14 @@ def upload_to_gofile(
                 timeout=(CONNECT_TIMEOUT, READ_TIMEOUT),
             )
 
-    except requests.exceptions.SSLError:
-        raise UploadError("SSL verification failed when connecting to gofile.io.")
-    except requests.exceptions.Timeout:
-        raise UploadError("Upload timed out — check your connection and try again.")
-    except requests.exceptions.ConnectionError:
-        raise UploadError("Could not reach gofile.io — check your internet connection.")
+    except requests.exceptions.SSLError as e:
+        raise UploadError("SSL verification failed when connecting to gofile.io.") from e
+    except requests.exceptions.Timeout as e:
+        raise UploadError("Upload timed out — check your connection and try again.") from e
+    except requests.exceptions.ConnectionError as e:
+        raise UploadError("Could not reach gofile.io — check your internet connection.") from e
     except requests.exceptions.RequestException as e:
-        raise UploadError(f"Upload failed: {e}")
+        raise UploadError(f"Upload failed: {e}") from e
 
     if response.status_code == 429:
         raise UploadError("Rate limited by gofile.io — wait a moment and try again.")
@@ -91,8 +91,8 @@ def upload_to_gofile(
 
     try:
         body = response.json()
-    except (ValueError, requests.exceptions.JSONDecodeError):
-        raise UploadError("Invalid response from gofile.io.")
+    except (ValueError, requests.exceptions.JSONDecodeError) as e:
+        raise UploadError("Invalid response from gofile.io.") from e
 
     status = body.get("status")
     if status != "ok":

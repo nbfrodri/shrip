@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import platform
+import shutil
+import subprocess
+import webbrowser
 from pathlib import Path
 from typing import Annotated, Optional
 
 import typer
 from rich.console import Console
+from rich.panel import Panel
 from rich.progress import (
     BarColumn,
     DownloadColumn,
@@ -28,6 +33,70 @@ app = typer.Typer(
 console = Console()
 
 
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+
+def _human_size(size_bytes: int) -> str:
+    """Format bytes into a human-readable string."""
+    for unit in ("B", "KB", "MB", "GB"):
+        if size_bytes < 1024:
+            return f"{size_bytes:.1f} {unit}" if unit != "B" else f"{size_bytes} B"
+        size_bytes /= 1024
+    return f"{size_bytes:.1f} TB"
+
+
+def _copy_to_clipboard(text: str) -> bool:
+    """Try to copy text to the system clipboard. Returns True on success."""
+    system = platform.system()
+    try:
+        if system == "Windows":
+            subprocess.run(
+                ["clip"],
+                input=text.encode("utf-16le"),
+                check=True,
+                timeout=5,
+            )
+            return True
+        elif system == "Darwin":
+            subprocess.run(
+                ["pbcopy"],
+                input=text.encode(),
+                check=True,
+                timeout=5,
+            )
+            return True
+        else:
+            # Linux — try xclip, then xsel, then wl-copy (Wayland)
+            for cmd in (
+                ["xclip", "-selection", "clipboard"],
+                ["xsel", "--clipboard", "--input"],
+                ["wl-copy"],
+            ):
+                if shutil.which(cmd[0]):
+                    subprocess.run(cmd, input=text.encode(), check=True, timeout=5)
+                    return True
+    except (subprocess.SubprocessError, OSError):
+        pass
+    return False
+
+
+def _total_input_size(paths: list[Path]) -> int:
+    """Sum the size of all input files (recursing into directories)."""
+    total = 0
+    for p in paths:
+        rp = p.resolve()
+        if rp.is_file():
+            total += rp.stat().st_size
+        elif rp.is_dir():
+            for f in rp.rglob("*"):
+                if f.is_file():
+                    total += f.stat().st_size
+    return total
+
+
+# ── CLI ───────────────────────────────────────────────────────────────────────
+
+
 def _version_callback(value: bool) -> None:
     if value:
         console.print(f"shrip {__version__}")
@@ -44,6 +113,14 @@ def main(
         str,
         typer.Option("--name", "-n", help="Archive name (without .zip)."),
     ] = "shrip_archive",
+    open_url: Annotated[
+        bool,
+        typer.Option("--open", "-o", help="Open the download link in your browser."),
+    ] = False,
+    copy: Annotated[
+        bool,
+        typer.Option("--copy", "-c", help="Copy the download link to clipboard."),
+    ] = False,
     version: Annotated[
         Optional[bool],
         typer.Option(
@@ -71,23 +148,26 @@ def main(
     # Count items for display
     item_count = len(paths)
     item_label = "item" if item_count == 1 else "items"
+    input_size = _total_input_size(paths)
 
     zip_path: Path | None = None
     try:
         # ── Compress ─────────────────────────────────────────────────
-        # Count total files for the progress bar
         total_files = 0
         for p in paths:
             rp = p.resolve()
             if rp.is_file():
                 total_files += 1
             elif rp.is_dir():
-                total_files += sum(1 for f in rp.rglob("*") if f.is_file())
-                if total_files == 0:
-                    total_files = 1  # empty dir counts as 1 entry
+                dir_files = sum(1 for f in rp.rglob("*") if f.is_file())
+                if dir_files == 0:
+                    total_files += 1
+                else:
+                    total_files += dir_files
 
         console.print(
-            f"\n[cyan]Compressing {item_count} {item_label} into {safe_name}.zip...[/cyan]"
+            f"\n[cyan]Compressing {item_count} {item_label} "
+            f"({_human_size(input_size)}) into {safe_name}.zip...[/cyan]"
         )
 
         with Progress(
@@ -106,7 +186,11 @@ def main(
 
         # ── Upload ───────────────────────────────────────────────────
         zip_size = zip_path.stat().st_size
-        console.print("[cyan]Uploading to gofile.io...[/cyan]")
+        ratio = ((1 - zip_size / input_size) * 100) if input_size > 0 else 0
+        console.print(
+            f"[cyan]Compressed to {_human_size(zip_size)}"
+            f" ({ratio:.0f}% smaller). Uploading...[/cyan]"
+        )
 
         with Progress(
             SpinnerColumn(),
@@ -124,10 +208,27 @@ def main(
             download_url = upload_to_gofile(zip_path, progress_callback=on_bytes_sent)
 
         # ── Success ──────────────────────────────────────────────────
-        console.print("\n[bold green]Success! Your file is live:[/bold green]")
-        console.print(f"[bold]{download_url}[/bold]")
+        clipboard_ok = _copy_to_clipboard(download_url) if copy else False
+
+        status_parts = ["[bold green]Link copied![/bold green]"] if clipboard_ok else []
+        if open_url:
+            webbrowser.open(download_url)
+            status_parts.append("[bold green]Opened in browser.[/bold green]")
+
+        subtitle = "  ".join(status_parts) if status_parts else None
+
+        console.print()
         console.print(
-            "\n[dim](Files are automatically deleted after a period of inactivity.)[/dim]\n"
+            Panel(
+                f"[bold]{download_url}[/bold]",
+                title="[bold green]Ready to share[/bold green]",
+                subtitle=subtitle,
+                border_style="green",
+                padding=(1, 2),
+            )
+        )
+        console.print(
+            "[dim](Files are automatically deleted after a period of inactivity.)[/dim]\n"
         )
 
     except KeyboardInterrupt:

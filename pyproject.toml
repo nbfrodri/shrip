@@ -4,22 +4,44 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "shrip"
-version = "0.1.0"
+version = "0.1.1"
 description = "Zip and share files from the terminal — no browser needed."
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.9"
+keywords = ["share", "zip", "upload", "cli", "gofile"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Utilities",
+]
 dependencies = [
     "typer>=0.9.0",
     "requests>=2.31.0",
     "rich>=13.0.0",
 ]
 
+[project.urls]
+Homepage = "https://github.com/nbfrodri/shrip"
+Repository = "https://github.com/nbfrodri/shrip"
+Issues = "https://github.com/nbfrodri/shrip/issues"
+
 [project.scripts]
 shrip = "shrip.cli:app"
 
 [project.optional-dependencies]
 dev = ["pytest>=7.0", "pytest-mock", "ruff"]
+
+[tool.setuptools.packages.find]
+include = ["shrip*"]
 
 [tool.ruff]
 target-version = "py39"

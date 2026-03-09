@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 import tempfile
 import zipfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Callable, Optional
 
 
@@ -16,6 +16,11 @@ def sanitize_name(name: str) -> str:
     name = name.replace(" ", "_")
     name = name.strip("._")
     return name or "shrip_archive"
+
+
+def _to_posix(path_str: str) -> str:
+    """Normalize a path string to forward slashes (ZIP spec requirement)."""
+    return path_str.replace("\\", "/")
 
 
 def _resolve_safe(path: Path, allowed_roots: list[Path]) -> Path | None:
@@ -41,6 +46,7 @@ def _collect_files(paths: list[Path]) -> list[tuple[Path, str]]:
     - Directories are walked recursively; files inside are stored relative to the
       directory itself (e.g., mydir/sub/file.txt → mydir/sub/file.txt).
     - Duplicate arcnames are made unique by prefixing with a counter.
+    - All arcnames use forward slashes per the ZIP specification.
     """
     entries: list[tuple[Path, str]] = []
     seen_arcnames: dict[str, int] = {}
@@ -66,7 +72,7 @@ def _collect_files(paths: list[Path]) -> list[tuple[Path, str]]:
                     if safe is None:
                         continue
                 relative = child.relative_to(input_path)
-                arcname = str(Path(dir_name) / relative)
+                arcname = _to_posix(f"{dir_name}/{relative}")
                 arcname = _deduplicate_arcname(arcname, seen_arcnames)
                 entries.append((child, arcname))
                 has_children = True
@@ -84,7 +90,8 @@ def _deduplicate_arcname(arcname: str, seen: dict[str, int]) -> str:
         seen[arcname] = 1
         return arcname
     seen[arcname] += 1
-    stem = Path(arcname)
+    # Use PurePosixPath to keep forward slashes on all platforms
+    stem = PurePosixPath(arcname)
     new_name = (
         f"{stem.parent}/{stem.stem}_{seen[arcname]}{stem.suffix}"
         if str(stem.parent) != "."
@@ -139,8 +146,8 @@ def create_archive(
         with zipfile.ZipFile(tmp_path, "w", zipfile.ZIP_DEFLATED) as zf:
             for file_path, arcname in entries:
                 if arcname.endswith("/"):
-                    # Empty directory entry
-                    zf.mkdir(arcname)
+                    # Empty directory entry — use ZipInfo for Python 3.9/3.10 compat
+                    zf.writestr(zipfile.ZipInfo(arcname), "")
                 else:
                     zf.write(file_path, arcname)
                 if progress_callback is not None:
