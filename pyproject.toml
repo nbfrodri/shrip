@@ -28,6 +28,7 @@ dependencies = [
     "requests>=2.31.0",
     "requests-toolbelt>=1.0.0",
     "rich>=13.0.0",
+    "pyzipper>=0.3.6",
 ]
 
 [project.urls]

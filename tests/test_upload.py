@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 import requests
 
-from shrip.upload import UploadError, _get_upload_url, upload_to_gofile
+from shrip.upload import UploadError, UploadResult, _get_upload_url, upload_to_gofile
 
 _MOCK_SESSION = "shrip.upload._create_session"
 _MOCK_GET_SERVER = "shrip.upload._get_server_for_zone"
@@ -61,9 +61,11 @@ class TestUploadSuccess:
 
         session = _mock_session(post_return=_mock_response(200, _success_json()))
         with patch(_MOCK_SESSION, return_value=session):
-            url = upload_to_gofile(f)
+            result = upload_to_gofile(f)
 
-        assert url == "https://gofile.io/d/AbCd123"
+        assert isinstance(result, UploadResult)
+        assert result.url == "https://gofile.io/d/AbCd123"
+        assert result.md5 == "abc123"
 
     def test_sends_correct_request(self, tmp_path: Path):
         f = tmp_path / "archive.zip"
@@ -178,9 +180,9 @@ class TestRetryLogic:
             ]
         )
         with patch(_MOCK_SESSION, return_value=session):
-            url = upload_to_gofile(f)
+            result = upload_to_gofile(f)
 
-        assert url == "https://gofile.io/d/AbCd123"
+        assert result.url == "https://gofile.io/d/AbCd123"
         assert session.post.call_count == 2
 
     @patch("shrip.upload.RETRY_BACKOFF", 0)
@@ -195,9 +197,9 @@ class TestRetryLogic:
             ]
         )
         with patch(_MOCK_SESSION, return_value=session):
-            url = upload_to_gofile(f)
+            result = upload_to_gofile(f)
 
-        assert url == "https://gofile.io/d/AbCd123"
+        assert result.url == "https://gofile.io/d/AbCd123"
         assert session.post.call_count == 2
 
     @patch("shrip.upload.RETRY_BACKOFF", 0)

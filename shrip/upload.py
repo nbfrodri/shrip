@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -21,6 +22,14 @@ UPLOAD_BLOCKSIZE = 1024 * 1024  # 1 MiB — default is 8 KB, way too small for l
 
 class UploadError(Exception):
     """Raised when the upload fails for any reason."""
+
+
+@dataclass
+class UploadResult:
+    """Result of a successful upload to gofile.io."""
+
+    url: str
+    md5: str  # MD5 hash returned by gofile.io (may be empty if not provided)
 
 
 class _LargeBlockAdapter(HTTPAdapter):
@@ -70,9 +79,9 @@ def upload_to_gofile(
     file_path: Path,
     zone: Optional[str] = None,
     progress_callback: Optional[Callable[[int], None]] = None,
-) -> str:
+) -> UploadResult:
     """
-    Upload a file to gofile.io and return the download page URL.
+    Upload a file to gofile.io and return the upload result.
 
     Uses streaming multipart upload to avoid loading the entire file into memory.
 
@@ -82,7 +91,7 @@ def upload_to_gofile(
         progress_callback: Called with cumulative bytes sent after each chunk.
 
     Returns:
-        The download page URL (e.g., "https://gofile.io/d/AbCd123").
+        UploadResult with download URL and MD5 hash.
 
     Raises:
         UploadError: On any upload or API failure.
@@ -104,15 +113,11 @@ def upload_to_gofile(
         except UploadError:
             raise
         except requests.exceptions.SSLError as e:
-            raise UploadError(
-                "SSL verification failed when connecting to gofile.io."
-            ) from e
+            raise UploadError("SSL verification failed when connecting to gofile.io.") from e
         except requests.exceptions.Timeout as e:
             last_error = e
             if attempt == MAX_RETRIES:
-                raise UploadError(
-                    "Upload timed out — check your connection and try again."
-                ) from e
+                raise UploadError("Upload timed out — check your connection and try again.") from e
         except requests.exceptions.ConnectionError as e:
             last_error = e
             if attempt == MAX_RETRIES:
@@ -137,9 +142,7 @@ def _do_upload(
 ) -> requests.Response:
     """Perform a single streaming upload attempt."""
     with open(file_path, "rb") as f:
-        encoder = MultipartEncoder(
-            fields={"file": (file_path.name, f, "application/octet-stream")}
-        )
+        encoder = MultipartEncoder(fields={"file": (file_path.name, f, "application/octet-stream")})
 
         if progress_callback is not None:
             # Throttle callback to ~10 updates/sec to avoid overhead on large files
@@ -165,7 +168,7 @@ def _do_upload(
         )
 
 
-def _parse_response(response: requests.Response) -> str:
+def _parse_response(response: requests.Response) -> UploadResult:
     """Parse and validate the gofile.io API response."""
     if response.status_code == 429:
         raise UploadError("Rate limited by gofile.io — wait a moment and try again.")
@@ -196,4 +199,6 @@ def _parse_response(response: requests.Response) -> str:
     if not download_url:
         raise UploadError("Unexpected response from gofile.io — the API may have changed.")
 
-    return download_url
+    md5 = data.get("md5", "")
+
+    return UploadResult(url=download_url, md5=md5)

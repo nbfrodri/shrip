@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import fnmatch
 import re
 import tempfile
 import zipfile
 from pathlib import Path, PurePosixPath
 from typing import Callable, Optional
+
+import pyzipper
 
 
 def sanitize_name(name: str) -> str:
@@ -38,7 +41,33 @@ def _resolve_safe(path: Path, allowed_roots: list[Path]) -> Path | None:
     return None
 
 
-def _collect_files(paths: list[Path]) -> list[tuple[Path, str]]:
+def _should_exclude(relative_path: str, exclude_patterns: list[str]) -> bool:
+    """Check if a relative path matches any exclude pattern."""
+    # relative_path is always posix-style (forward slashes)
+    # Strip trailing / for directory patterns
+    parts = relative_path.rstrip("/").split("/")
+    for pattern in exclude_patterns:
+        clean_pattern = pattern.rstrip("/")
+        if "/" not in clean_pattern:
+            # Pattern without / → match against any path component
+            for part in parts:
+                if fnmatch.fnmatch(part, clean_pattern):
+                    return True
+        else:
+            # Pattern with / → match component-by-component so * doesn't cross /
+            pat_parts = clean_pattern.split("/")
+            path_parts = relative_path.rstrip("/").split("/")
+            pat_depth = len(pat_parts)
+            if pat_depth <= len(path_parts):
+                if all(fnmatch.fnmatch(path_parts[i], pat_parts[i]) for i in range(pat_depth)):
+                    return True
+    return False
+
+
+def _collect_files(
+    paths: list[Path],
+    exclude: list[str] | None = None,
+) -> list[tuple[Path, str]]:
     """
     Walk all input paths and return a list of (absolute_path, arcname) pairs.
 
@@ -47,7 +76,9 @@ def _collect_files(paths: list[Path]) -> list[tuple[Path, str]]:
       directory itself (e.g., mydir/sub/file.txt → mydir/sub/file.txt).
     - Duplicate arcnames are made unique by prefixing with a counter.
     - All arcnames use forward slashes per the ZIP specification.
+    - Files matching any exclude pattern are skipped.
     """
+    exclude_patterns = exclude or []
     entries: list[tuple[Path, str]] = []
     seen_arcnames: dict[str, int] = {}
     allowed_roots = [p.resolve().parent if p.is_file() else p.resolve() for p in paths]
@@ -57,6 +88,8 @@ def _collect_files(paths: list[Path]) -> list[tuple[Path, str]]:
 
         if input_path.is_file():
             arcname = input_path.name
+            if _should_exclude(arcname, exclude_patterns):
+                continue
             arcname = _deduplicate_arcname(arcname, seen_arcnames)
             entries.append((input_path, arcname))
 
@@ -72,12 +105,15 @@ def _collect_files(paths: list[Path]) -> list[tuple[Path, str]]:
                     if safe is None:
                         continue
                 relative = child.relative_to(input_path)
+                relative_posix = _to_posix(str(relative))
                 arcname = _to_posix(f"{dir_name}/{relative}")
+                if _should_exclude(relative_posix, exclude_patterns):
+                    continue
                 arcname = _deduplicate_arcname(arcname, seen_arcnames)
                 entries.append((child, arcname))
                 has_children = True
 
-            # Empty directory: add a directory entry
+            # Empty directory: add a directory entry (only if nothing was excluded)
             if not has_children:
                 entries.append((input_path, dir_name + "/"))
 
@@ -104,24 +140,79 @@ def _deduplicate_arcname(arcname: str, seen: dict[str, int]) -> str:
 _CHUNK_SIZE = 1024 * 1024  # 1 MiB chunks for progress reporting
 
 # File extensions that are already compressed — DEFLATE wastes CPU on these
-_INCOMPRESSIBLE_EXTENSIONS = frozenset({
-    # Archives
-    ".zip", ".gz", ".bz2", ".xz", ".7z", ".rar", ".zst", ".lz4", ".lzma", ".cab", ".tar.gz",
-    # Disk images
-    ".iso", ".img", ".dmg", ".vhd", ".vhdx", ".vmdk", ".qcow2",
-    # Video
-    ".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm", ".m4v", ".ts",
-    # Audio
-    ".mp3", ".aac", ".ogg", ".opus", ".flac", ".wma", ".m4a",
-    # Images
-    ".jpg", ".jpeg", ".png", ".gif", ".webp", ".avif", ".heic", ".heif",
-    # Documents (already compressed internally)
-    ".pdf", ".docx", ".xlsx", ".pptx", ".odt", ".ods", ".odp", ".epub",
-    # Executables / packages
-    ".deb", ".rpm", ".apk", ".appimage", ".snap", ".msi", ".exe",
-    # Other
-    ".whl", ".jar", ".war", ".egg",
-})
+_INCOMPRESSIBLE_EXTENSIONS = frozenset(
+    {
+        # Archives
+        ".zip",
+        ".gz",
+        ".bz2",
+        ".xz",
+        ".7z",
+        ".rar",
+        ".zst",
+        ".lz4",
+        ".lzma",
+        ".cab",
+        ".tar.gz",
+        # Disk images
+        ".iso",
+        ".img",
+        ".dmg",
+        ".vhd",
+        ".vhdx",
+        ".vmdk",
+        ".qcow2",
+        # Video
+        ".mp4",
+        ".mkv",
+        ".avi",
+        ".mov",
+        ".wmv",
+        ".flv",
+        ".webm",
+        ".m4v",
+        ".ts",
+        # Audio
+        ".mp3",
+        ".aac",
+        ".ogg",
+        ".opus",
+        ".flac",
+        ".wma",
+        ".m4a",
+        # Images
+        ".jpg",
+        ".jpeg",
+        ".png",
+        ".gif",
+        ".webp",
+        ".avif",
+        ".heic",
+        ".heif",
+        # Documents (already compressed internally)
+        ".pdf",
+        ".docx",
+        ".xlsx",
+        ".pptx",
+        ".odt",
+        ".ods",
+        ".odp",
+        ".epub",
+        # Executables / packages
+        ".deb",
+        ".rpm",
+        ".apk",
+        ".appimage",
+        ".snap",
+        ".msi",
+        ".exe",
+        # Other
+        ".whl",
+        ".jar",
+        ".war",
+        ".egg",
+    }
+)
 
 
 def _is_incompressible(file_path: Path) -> bool:
@@ -133,7 +224,9 @@ def create_archive(
     paths: list[Path],
     name: str = "shrip_archive",
     fast: bool = False,
+    exclude: list[str] | None = None,
     progress_callback: Optional[Callable[[int], None]] = None,
+    password: Optional[str] = None,
 ) -> Path:
     """
     Create a temporary .zip archive containing all provided files and directories.
@@ -144,7 +237,9 @@ def create_archive(
         fast: If True, skip compression entirely (ZIP_STORED). If False,
               auto-detect: use ZIP_STORED for already-compressed formats,
               ZIP_DEFLATED for the rest.
+        exclude: Glob patterns for files/directories to skip.
         progress_callback: Called with the number of bytes just compressed.
+        password: If set, encrypt the archive with AES-256 using this password.
 
     Returns:
         Path to the created temporary zip file.
@@ -164,10 +259,14 @@ def create_archive(
         if resolved.is_file() and not _is_readable(resolved):
             raise PermissionError(f"Cannot read file: {p}")
 
-    entries = _collect_files(paths)
+    entries = _collect_files(paths, exclude=exclude)
 
-    # Check we have something to zip (allow empty dirs, but not zero entries)
+    # Check we have something to zip
     if not entries:
+        raise ValueError("No files found to archive.")
+    # If exclude patterns were used and only empty dir stubs remain, that's an error
+    has_files = any(not arc.endswith("/") for _, arc in entries)
+    if exclude and not has_files:
         raise ValueError("No files found to archive.")
 
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".zip", prefix=f".shrip_{safe_name}_")
@@ -175,18 +274,51 @@ def create_archive(
     tmp.close()
 
     try:
-        with zipfile.ZipFile(tmp_path, "w") as zf:
-            for file_path, arcname in entries:
-                if arcname.endswith("/"):
-                    # Empty directory entry — use ZipInfo for Python 3.9/3.10 compat
-                    zf.writestr(zipfile.ZipInfo(arcname), "")
-                else:
-                    _write_file_chunked(zf, file_path, arcname, fast, progress_callback)
+        if password:
+            _create_encrypted_archive(tmp_path, entries, fast, progress_callback, password)
+        else:
+            _create_standard_archive(tmp_path, entries, fast, progress_callback)
         return tmp_path
     except Exception:
         # Cleanup on failure
         tmp_path.unlink(missing_ok=True)
         raise
+
+
+def _create_standard_archive(
+    tmp_path: Path,
+    entries: list[tuple[Path, str]],
+    fast: bool,
+    progress_callback: Optional[Callable[[int], None]],
+) -> None:
+    """Create a standard (unencrypted) zip archive."""
+    with zipfile.ZipFile(tmp_path, "w") as zf:
+        for file_path, arcname in entries:
+            if arcname.endswith("/"):
+                zf.writestr(zipfile.ZipInfo(arcname), "")
+            else:
+                _write_file_chunked(zf, file_path, arcname, fast, progress_callback)
+
+
+def _create_encrypted_archive(
+    tmp_path: Path,
+    entries: list[tuple[Path, str]],
+    fast: bool,
+    progress_callback: Optional[Callable[[int], None]],
+    password: str,
+) -> None:
+    """Create an AES-256 encrypted zip archive using pyzipper."""
+    with pyzipper.AESZipFile(
+        tmp_path,
+        "w",
+        encryption=pyzipper.WZ_AES,
+    ) as zf:
+        zf.setpassword(password.encode("utf-8"))
+        for file_path, arcname in entries:
+            if arcname.endswith("/"):
+                zf.writestr(pyzipper.ZipInfo(arcname), "")
+            else:
+                _write_file_chunked_encrypted(zf, file_path, arcname, fast, progress_callback)
 
 
 def _write_file_chunked(
@@ -210,6 +342,63 @@ def _write_file_chunked(
             dest.write(chunk)
             if progress_callback is not None:
                 progress_callback(len(chunk))
+
+
+def _write_file_chunked_encrypted(
+    zf: pyzipper.AESZipFile,
+    file_path: Path,
+    arcname: str,
+    fast: bool,
+    progress_callback: Optional[Callable[[int], None]],
+) -> None:
+    """Write a file into an encrypted zip archive, reporting progress."""
+    compress_type = (
+        pyzipper.ZIP_STORED if (fast or _is_incompressible(file_path)) else pyzipper.ZIP_DEFLATED
+    )
+    # pyzipper doesn't support chunked writing via zf.open(); read then writestr
+    data = bytearray()
+    with open(file_path, "rb") as src:
+        while True:
+            chunk = src.read(_CHUNK_SIZE)
+            if not chunk:
+                break
+            data.extend(chunk)
+            if progress_callback is not None:
+                progress_callback(len(chunk))
+    zf.writestr(arcname, bytes(data), compress_type=compress_type)
+
+
+def preview_archive(
+    paths: list[Path],
+    exclude: list[str] | None = None,
+) -> tuple[list[tuple[Path, str]], list[tuple[Path, str]]]:
+    """
+    Preview what would be archived without creating the zip.
+
+    Returns:
+        (included, excluded) — each a list of (absolute_path, arcname) pairs.
+
+    Raises:
+        FileNotFoundError: If any input path does not exist.
+        PermissionError: If any input file cannot be read.
+    """
+    for p in paths:
+        resolved = p.resolve()
+        if not resolved.exists():
+            raise FileNotFoundError(f"Path does not exist: {p}")
+        if resolved.is_file() and not _is_readable(resolved):
+            raise PermissionError(f"Cannot read file: {p}")
+
+    all_entries = _collect_files(paths, exclude=None)
+    if exclude:
+        included = _collect_files(paths, exclude=exclude)
+        included_arcnames = {arc for _, arc in included}
+        excluded = [(fp, arc) for fp, arc in all_entries if arc not in included_arcnames]
+    else:
+        included = all_entries
+        excluded = []
+
+    return included, excluded
 
 
 def _is_readable(path: Path) -> bool:

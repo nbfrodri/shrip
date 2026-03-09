@@ -7,7 +7,9 @@ from pathlib import Path
 
 import pytest
 
-from shrip.archive import _is_incompressible, create_archive, sanitize_name
+import pyzipper
+
+from shrip.archive import _is_incompressible, _should_exclude, create_archive, sanitize_name
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -427,5 +429,247 @@ class TestIncompressibleDetection:
                 jpg_info = zf.getinfo("mixed/image.jpg")
                 assert txt_info.compress_type == zipfile.ZIP_DEFLATED
                 assert jpg_info.compress_type == zipfile.ZIP_STORED
+        finally:
+            zip_path.unlink(missing_ok=True)
+
+
+# ── Exclude patterns ──────────────────────────────────────────────────────
+
+
+class TestShouldExclude:
+    """Unit tests for the _should_exclude() function."""
+
+    def test_simple_filename_match(self):
+        assert _should_exclude("app.log", ["*.log"])
+
+    def test_simple_filename_no_match(self):
+        assert not _should_exclude("app.py", ["*.log"])
+
+    def test_nested_path_matches_filename_pattern(self):
+        assert _should_exclude("src/debug/trace.log", ["*.log"])
+
+    def test_directory_name_match(self):
+        assert _should_exclude("node_modules/express/index.js", ["node_modules"])
+
+    def test_directory_name_no_false_positive(self):
+        assert not _should_exclude("my_node_modules/x.js", ["node_modules"])
+
+    def test_pattern_with_slash_matches_full_path(self):
+        assert _should_exclude("src/main.py", ["src/*.py"])
+
+    def test_pattern_with_slash_no_deep_match(self):
+        assert not _should_exclude("src/utils/helper.py", ["src/*.py"])
+
+    def test_dotfile_exact_match(self):
+        assert _should_exclude(".env", [".env"])
+
+    def test_dotfile_no_partial_match(self):
+        assert not _should_exclude(".envrc", [".env"])
+
+    def test_multiple_patterns(self):
+        assert _should_exclude("debug.log", ["*.pyc", "*.log"])
+        assert _should_exclude("cache.pyc", ["*.pyc", "*.log"])
+        assert not _should_exclude("main.py", ["*.pyc", "*.log"])
+
+    def test_trailing_slash_stripped(self):
+        assert _should_exclude("__pycache__/module.pyc", ["__pycache__/"])
+
+    def test_wildcard_star_matches_all(self):
+        assert _should_exclude("anything.txt", ["*"])
+
+
+class TestExcludePatterns:
+    """Integration tests for exclude patterns in create_archive()."""
+
+    def test_single_pattern_excludes_files(self, tmp_path: Path):
+        d = tmp_path / "proj"
+        d.mkdir()
+        (d / "main.py").write_text("code")
+        (d / "debug.log").write_text("log data")
+
+        zip_path = create_archive([d], "test", exclude=["*.log"])
+        try:
+            names = _zip_names(zip_path)
+            assert "proj/main.py" in names
+            assert "proj/debug.log" not in names
+        finally:
+            zip_path.unlink(missing_ok=True)
+
+    def test_multiple_patterns(self, tmp_path: Path):
+        d = tmp_path / "proj"
+        d.mkdir()
+        (d / "main.py").write_text("code")
+        (d / "cache.pyc").write_bytes(b"\x00")
+        (d / "debug.log").write_text("log")
+
+        zip_path = create_archive([d], "test", exclude=["*.log", "*.pyc"])
+        try:
+            names = _zip_names(zip_path)
+            assert names == ["proj/main.py"]
+        finally:
+            zip_path.unlink(missing_ok=True)
+
+    def test_directory_exclusion(self, tmp_path: Path):
+        d = tmp_path / "proj"
+        d.mkdir()
+        (d / "src").mkdir()
+        (d / "src" / "app.py").write_text("app")
+        nm = d / "node_modules"
+        nm.mkdir()
+        (nm / "pkg").mkdir()
+        (nm / "pkg" / "index.js").write_text("js")
+
+        zip_path = create_archive([d], "test", exclude=["node_modules"])
+        try:
+            names = _zip_names(zip_path)
+            assert "proj/src/app.py" in names
+            assert all("node_modules" not in n for n in names)
+        finally:
+            zip_path.unlink(missing_ok=True)
+
+    def test_nested_path_exclusion(self, tmp_path: Path):
+        d = tmp_path / "proj"
+        (d / "src" / "utils").mkdir(parents=True)
+        (d / "src" / "main.py").write_text("main")
+        (d / "src" / "utils" / "helper.py").write_text("helper")
+
+        zip_path = create_archive([d], "test", exclude=["src/*.py"])
+        try:
+            names = _zip_names(zip_path)
+            # src/*.py only matches src/main.py, not src/utils/helper.py
+            assert "proj/src/main.py" not in names
+            assert "proj/src/utils/helper.py" in names
+        finally:
+            zip_path.unlink(missing_ok=True)
+
+    def test_no_matches_includes_all(self, tmp_path: Path):
+        d = tmp_path / "proj"
+        d.mkdir()
+        (d / "a.txt").write_text("a")
+        (d / "b.txt").write_text("b")
+
+        zip_path = create_archive([d], "test", exclude=["*.xyz"])
+        try:
+            names = _zip_names(zip_path)
+            assert "proj/a.txt" in names
+            assert "proj/b.txt" in names
+        finally:
+            zip_path.unlink(missing_ok=True)
+
+    def test_exclude_everything_raises_error(self, tmp_path: Path):
+        d = tmp_path / "proj"
+        d.mkdir()
+        (d / "a.txt").write_text("a")
+        (d / "b.txt").write_text("b")
+
+        with pytest.raises(ValueError, match="No files found"):
+            create_archive([d], "test", exclude=["*"])
+
+    def test_exclude_top_level_file(self, tmp_path: Path):
+        f1 = tmp_path / "keep.txt"
+        f1.write_text("keep")
+        f2 = tmp_path / "skip.log"
+        f2.write_text("skip")
+
+        zip_path = create_archive([f1, f2], "test", exclude=["*.log"])
+        try:
+            names = _zip_names(zip_path)
+            assert "keep.txt" in names
+            assert "skip.log" not in names
+        finally:
+            zip_path.unlink(missing_ok=True)
+
+    def test_empty_exclude_list_no_filtering(self, tmp_path: Path):
+        d = tmp_path / "proj"
+        d.mkdir()
+        (d / "a.txt").write_text("a")
+
+        zip_path = create_archive([d], "test", exclude=[])
+        try:
+            names = _zip_names(zip_path)
+            assert "proj/a.txt" in names
+        finally:
+            zip_path.unlink(missing_ok=True)
+
+
+# ── Password encryption ───────────────────────────────────────────────────
+
+
+class TestEncryptedArchive:
+    def test_encrypted_zip_requires_password(self, tmp_path: Path):
+        f = tmp_path / "secret.txt"
+        f.write_text("confidential data")
+
+        zip_path = create_archive([f], "enc_test", password="mypassword")
+        try:
+            # Cannot read without password
+            with pyzipper.AESZipFile(zip_path, "r") as zf:
+                with pytest.raises(RuntimeError):
+                    zf.read("secret.txt")
+        finally:
+            zip_path.unlink(missing_ok=True)
+
+    def test_encrypted_zip_readable_with_correct_password(self, tmp_path: Path):
+        f = tmp_path / "secret.txt"
+        f.write_text("confidential data")
+
+        zip_path = create_archive([f], "enc_test", password="mypassword")
+        try:
+            with pyzipper.AESZipFile(zip_path, "r") as zf:
+                zf.setpassword(b"mypassword")
+                assert zf.read("secret.txt") == b"confidential data"
+        finally:
+            zip_path.unlink(missing_ok=True)
+
+    def test_encrypted_zip_with_fast_mode(self, tmp_path: Path):
+        f = tmp_path / "data.txt"
+        f.write_text("test data")
+
+        zip_path = create_archive([f], "enc_fast", fast=True, password="pass123")
+        try:
+            with pyzipper.AESZipFile(zip_path, "r") as zf:
+                zf.setpassword(b"pass123")
+                assert zf.read("data.txt") == b"test data"
+        finally:
+            zip_path.unlink(missing_ok=True)
+
+    def test_encrypted_zip_directory(self, tmp_path: Path):
+        d = tmp_path / "proj"
+        d.mkdir()
+        (d / "a.txt").write_text("aaa")
+        (d / "b.txt").write_text("bbb")
+
+        zip_path = create_archive([d], "enc_dir", password="dirpass")
+        try:
+            with pyzipper.AESZipFile(zip_path, "r") as zf:
+                zf.setpassword(b"dirpass")
+                assert zf.read("proj/a.txt") == b"aaa"
+                assert zf.read("proj/b.txt") == b"bbb"
+        finally:
+            zip_path.unlink(missing_ok=True)
+
+    def test_no_password_creates_standard_zip(self, tmp_path: Path):
+        f = tmp_path / "normal.txt"
+        f.write_text("normal")
+
+        zip_path = create_archive([f], "no_enc")
+        try:
+            # Standard zipfile should be able to read it (no encryption)
+            with zipfile.ZipFile(zip_path, "r") as zf:
+                assert zf.read("normal.txt") == b"normal"
+        finally:
+            zip_path.unlink(missing_ok=True)
+
+    def test_encrypted_with_progress_callback(self, tmp_path: Path):
+        f = tmp_path / "data.txt"
+        f.write_text("hello world")
+
+        bytes_reported: list[int] = []
+        zip_path = create_archive(
+            [f], "enc_cb", password="pass", progress_callback=bytes_reported.append
+        )
+        try:
+            assert len(bytes_reported) >= 1
+            assert sum(bytes_reported) == 11  # "hello world" = 11 bytes
         finally:
             zip_path.unlink(missing_ok=True)
