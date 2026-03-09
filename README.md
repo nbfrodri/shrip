@@ -30,6 +30,16 @@ pip install git+https://github.com/nbfrodri/shrip.git
 
 > Requires Python 3.9 or higher. Works on Windows, macOS, and Linux.
 
+## Updating
+
+```bash
+# If installed with pipx
+pipx upgrade shrip
+
+# If installed with pip
+pip install --upgrade shrip
+```
+
 ## Uninstalling
 
 ```bash
