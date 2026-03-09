@@ -174,9 +174,9 @@ shrip ./project/ --json --dry-run
 
 ```
 Compressing 3 items (4.8 MB) into project-handover.zip...
-⠋ Compressing ████████████████████████████████████ 100% 4.8/4.8 MB
+⠋ Compressing ████████████████████████████████████ 100% 4.8/4.8 MB 0:00:03
 Compressed to 1.2 MB (75% smaller). Uploading...
-⠋ Uploading   ████████████████████████████████████ 1.2/1.2 MB  850.3 kB/s
+⠋ Uploading   ████████████████████████████████████ 1.2/1.2 MB  850.3 kB/s 0:00:07
 
 ╭──────────── Ready to share ────────────╮
 │                                        │
