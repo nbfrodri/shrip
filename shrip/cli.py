@@ -133,6 +133,14 @@ def main(
         bool,
         typer.Option("--copy", "-c", help="Copy the download link to clipboard."),
     ] = False,
+    fast: Annotated[
+        bool,
+        typer.Option("--fast", "-f", help="Skip compression (faster for large/pre-compressed files)."),
+    ] = False,
+    zone: Annotated[
+        Optional[str],
+        typer.Option("--zone", "-z", help="Upload zone: 'eu' (Europe) or 'na' (North America)."),
+    ] = None,
     version: Annotated[
         Optional[bool],
         typer.Option(
@@ -145,6 +153,11 @@ def main(
     ] = None,
 ) -> None:
     """Zip files and folders, upload to gofile.io, and get a download link."""
+    # Validate zone
+    if zone is not None and zone not in ("eu", "na"):
+        console.print("[red]Error:[/red] --zone must be 'eu' or 'na'.")
+        raise typer.Exit(code=1)
+
     # Normalize name
     if not name or not name.strip():
         name = "shrip_archive"
@@ -177,8 +190,9 @@ def main(
                 else:
                     total_files += dir_files
 
+        mode_label = "Packaging" if fast else "Compressing"
         console.print(
-            f"\n[cyan]Compressing {item_count} {item_label} "
+            f"\n[cyan]{mode_label} {item_count} {item_label} "
             f"({_human_size(input_size)}) into {safe_name}.zip...[/cyan]"
         )
 
@@ -190,12 +204,14 @@ def main(
             DownloadColumn(),
             console=console,
         ) as progress:
-            task = progress.add_task("Compressing", total=input_size)
+            task = progress.add_task(mode_label, total=input_size)
 
             def on_file_compressed(bytes_written: int) -> None:
                 progress.advance(task, advance=bytes_written)
 
-            zip_path = create_archive(paths, name, progress_callback=on_file_compressed)
+            zip_path = create_archive(
+                paths, name, fast=fast, progress_callback=on_file_compressed
+            )
 
         # ── Upload ───────────────────────────────────────────────────
         zip_size = zip_path.stat().st_size
@@ -218,7 +234,9 @@ def main(
             def on_bytes_sent(cumulative: int) -> None:
                 progress.update(task, completed=min(cumulative, zip_size))
 
-            download_url = upload_to_gofile(zip_path, progress_callback=on_bytes_sent)
+            download_url = upload_to_gofile(
+                zip_path, zone=zone, progress_callback=on_bytes_sent
+            )
 
         # ── Success ──────────────────────────────────────────────────
         clipboard_ok = _copy_to_clipboard(download_url) if copy else False

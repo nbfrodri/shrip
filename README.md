@@ -84,6 +84,12 @@ shrip file.txt --copy
 # Open in browser after upload
 shrip file.txt --open
 
+# Skip compression (faster for ISOs, videos, archives, etc.)
+shrip ubuntu.iso --fast
+
+# Upload to a specific region (eu or na)
+shrip bigfile.tar.gz --zone na
+
 # Combine flags
 shrip ./dist/ -n release -c -o
 ```
@@ -92,7 +98,7 @@ shrip ./dist/ -n release -c -o
 
 ```
 Compressing 3 items (4.8 MB) into project-handover.zip...
-⠋ Compressing ████████████████████████████████████ 3/3 files
+⠋ Compressing ████████████████████████████████████ 100% 4.8/4.8 MB
 Compressed to 1.2 MB (75% smaller). Uploading...
 ⠋ Uploading   ████████████████████████████████████ 1.2/1.2 MB  850.3 kB/s
 
@@ -112,14 +118,16 @@ Compressed to 1.2 MB (75% smaller). Uploading...
 | `--name` | `-n` | Custom archive name (without `.zip`) | `shrip_archive` |
 | `--copy` | `-c` | Copy the download link to clipboard | off |
 | `--open` | `-o` | Open the download link in your browser | off |
+| `--fast` | `-f` | Skip compression (faster for pre-compressed files) | off |
+| `--zone` | `-z` | Upload region: `eu` (Europe) or `na` (North America) | auto |
 | `--version` | `-v` | Show version and exit | |
 | `--help` | | Show usage help | |
 
 ## How It Works
 
 1. Validates that all provided paths exist.
-2. Compresses everything into a temporary `.zip` archive — directories are walked recursively, preserving folder structure.
-3. Uploads the archive to [gofile.io](https://gofile.io) (anonymous, no account needed, no file size limit).
+2. Compresses everything into a temporary `.zip` archive — directories are walked recursively, preserving folder structure. Already-compressed formats (`.iso`, `.mp4`, `.zip`, `.jpg`, etc.) are stored without compression to save time.
+3. Uploads the archive to [gofile.io](https://gofile.io) (anonymous, no account needed, no file size limit). Supports streaming upload for large files with minimal memory usage.
 4. Prints the download URL (and copies/opens it if requested).
 5. Deletes the temporary zip file automatically — even if the upload fails or you hit Ctrl+C.
 

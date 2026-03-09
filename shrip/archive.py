@@ -103,10 +103,36 @@ def _deduplicate_arcname(arcname: str, seen: dict[str, int]) -> str:
 
 _CHUNK_SIZE = 1024 * 1024  # 1 MiB chunks for progress reporting
 
+# File extensions that are already compressed — DEFLATE wastes CPU on these
+_INCOMPRESSIBLE_EXTENSIONS = frozenset({
+    # Archives
+    ".zip", ".gz", ".bz2", ".xz", ".7z", ".rar", ".zst", ".lz4", ".lzma", ".cab", ".tar.gz",
+    # Disk images
+    ".iso", ".img", ".dmg", ".vhd", ".vhdx", ".vmdk", ".qcow2",
+    # Video
+    ".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm", ".m4v", ".ts",
+    # Audio
+    ".mp3", ".aac", ".ogg", ".opus", ".flac", ".wma", ".m4a",
+    # Images
+    ".jpg", ".jpeg", ".png", ".gif", ".webp", ".avif", ".heic", ".heif",
+    # Documents (already compressed internally)
+    ".pdf", ".docx", ".xlsx", ".pptx", ".odt", ".ods", ".odp", ".epub",
+    # Executables / packages
+    ".deb", ".rpm", ".apk", ".appimage", ".snap", ".msi", ".exe",
+    # Other
+    ".whl", ".jar", ".war", ".egg",
+})
+
+
+def _is_incompressible(file_path: Path) -> bool:
+    """Check if a file is likely already compressed based on its extension."""
+    return file_path.suffix.lower() in _INCOMPRESSIBLE_EXTENSIONS
+
 
 def create_archive(
     paths: list[Path],
     name: str = "shrip_archive",
+    fast: bool = False,
     progress_callback: Optional[Callable[[int], None]] = None,
 ) -> Path:
     """
@@ -115,6 +141,9 @@ def create_archive(
     Args:
         paths: Files and/or directories to include.
         name: Archive base name (without .zip). Sanitized automatically.
+        fast: If True, skip compression entirely (ZIP_STORED). If False,
+              auto-detect: use ZIP_STORED for already-compressed formats,
+              ZIP_DEFLATED for the rest.
         progress_callback: Called with the number of bytes just compressed.
 
     Returns:
@@ -146,13 +175,13 @@ def create_archive(
     tmp.close()
 
     try:
-        with zipfile.ZipFile(tmp_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        with zipfile.ZipFile(tmp_path, "w") as zf:
             for file_path, arcname in entries:
                 if arcname.endswith("/"):
                     # Empty directory entry — use ZipInfo for Python 3.9/3.10 compat
                     zf.writestr(zipfile.ZipInfo(arcname), "")
                 else:
-                    _write_file_chunked(zf, file_path, arcname, progress_callback)
+                    _write_file_chunked(zf, file_path, arcname, fast, progress_callback)
         return tmp_path
     except Exception:
         # Cleanup on failure
@@ -164,11 +193,15 @@ def _write_file_chunked(
     zf: zipfile.ZipFile,
     file_path: Path,
     arcname: str,
+    fast: bool,
     progress_callback: Optional[Callable[[int], None]],
 ) -> None:
     """Write a file into the zip archive in chunks, reporting progress."""
     zinfo = zipfile.ZipInfo.from_file(file_path, arcname)
-    zinfo.compress_type = zipfile.ZIP_DEFLATED
+    if fast or _is_incompressible(file_path):
+        zinfo.compress_type = zipfile.ZIP_STORED
+    else:
+        zinfo.compress_type = zipfile.ZIP_DEFLATED
     with zf.open(zinfo, "w") as dest, open(file_path, "rb") as src:
         while True:
             chunk = src.read(_CHUNK_SIZE)

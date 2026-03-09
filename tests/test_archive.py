@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from shrip.archive import create_archive, sanitize_name
+from shrip.archive import _is_incompressible, create_archive, sanitize_name
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -345,5 +345,87 @@ class TestArcnameSecurity:
             names = _zip_names(zip_path)
             for name in names:
                 assert ".." not in name, f"arcname contains ..: {name}"
+        finally:
+            zip_path.unlink(missing_ok=True)
+
+
+# ── Fast mode (ZIP_STORED) ────────────────────────────────────────────────
+
+
+class TestFastMode:
+    def test_fast_mode_uses_stored(self, tmp_path: Path):
+        f = tmp_path / "data.txt"
+        f.write_text("hello world")
+
+        zip_path = create_archive([f], "fast_test", fast=True)
+        try:
+            with zipfile.ZipFile(zip_path) as zf:
+                info = zf.getinfo("data.txt")
+                assert info.compress_type == zipfile.ZIP_STORED
+        finally:
+            zip_path.unlink(missing_ok=True)
+
+    def test_default_mode_uses_deflated(self, tmp_path: Path):
+        f = tmp_path / "data.txt"
+        f.write_text("hello world")
+
+        zip_path = create_archive([f], "deflate_test")
+        try:
+            with zipfile.ZipFile(zip_path) as zf:
+                info = zf.getinfo("data.txt")
+                assert info.compress_type == zipfile.ZIP_DEFLATED
+        finally:
+            zip_path.unlink(missing_ok=True)
+
+
+# ── Auto-detect incompressible formats ────────────────────────────────────
+
+
+class TestIncompressibleDetection:
+    def test_known_extensions_detected(self):
+        for ext in (".iso", ".mp4", ".zip", ".jpg", ".mp3", ".gz", ".mkv"):
+            assert _is_incompressible(Path(f"file{ext}")), f"{ext} should be incompressible"
+
+    def test_text_files_not_detected(self):
+        for ext in (".txt", ".py", ".json", ".html", ".csv", ".xml"):
+            assert not _is_incompressible(Path(f"file{ext}")), f"{ext} should be compressible"
+
+    def test_incompressible_file_uses_stored(self, tmp_path: Path):
+        f = tmp_path / "movie.mp4"
+        f.write_bytes(b"\x00" * 100)
+
+        zip_path = create_archive([f], "auto_test")
+        try:
+            with zipfile.ZipFile(zip_path) as zf:
+                info = zf.getinfo("movie.mp4")
+                assert info.compress_type == zipfile.ZIP_STORED
+        finally:
+            zip_path.unlink(missing_ok=True)
+
+    def test_compressible_file_uses_deflated(self, tmp_path: Path):
+        f = tmp_path / "code.py"
+        f.write_text("print('hello')")
+
+        zip_path = create_archive([f], "auto_test")
+        try:
+            with zipfile.ZipFile(zip_path) as zf:
+                info = zf.getinfo("code.py")
+                assert info.compress_type == zipfile.ZIP_DEFLATED
+        finally:
+            zip_path.unlink(missing_ok=True)
+
+    def test_mixed_dir_uses_per_file_compression(self, tmp_path: Path):
+        d = tmp_path / "mixed"
+        d.mkdir()
+        (d / "readme.txt").write_text("hello")
+        (d / "image.jpg").write_bytes(b"\xff\xd8" * 50)
+
+        zip_path = create_archive([d], "mixed_test")
+        try:
+            with zipfile.ZipFile(zip_path) as zf:
+                txt_info = zf.getinfo("mixed/readme.txt")
+                jpg_info = zf.getinfo("mixed/image.jpg")
+                assert txt_info.compress_type == zipfile.ZIP_DEFLATED
+                assert jpg_info.compress_type == zipfile.ZIP_STORED
         finally:
             zip_path.unlink(missing_ok=True)

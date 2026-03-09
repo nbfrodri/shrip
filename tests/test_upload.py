@@ -8,9 +8,10 @@ from unittest.mock import MagicMock, patch
 import pytest
 import requests
 
-from shrip.upload import UploadError, upload_to_gofile
+from shrip.upload import UploadError, _get_upload_url, upload_to_gofile
 
 _MOCK_SESSION = "shrip.upload._create_session"
+_MOCK_GET_SERVER = "shrip.upload._get_server_for_zone"
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -315,3 +316,37 @@ class TestMalformedResponses:
         with patch(_MOCK_SESSION, return_value=session):
             with pytest.raises(UploadError, match="API may have changed"):
                 upload_to_gofile(f)
+
+
+# ── Zone server selection ────────────────────────────────────────────────────
+
+
+class TestZoneSelection:
+    def test_no_zone_uses_default_url(self):
+        with patch(_MOCK_GET_SERVER, return_value="store1"):
+            url = _get_upload_url(None)
+        assert url == "https://upload.gofile.io/uploadfile"
+
+    def test_zone_with_server_uses_specific_url(self):
+        with patch(_MOCK_GET_SERVER, return_value="store5") as mock:
+            url = _get_upload_url("na")
+        mock.assert_called_once_with("na")
+        assert url == "https://store5.gofile.io/contents/uploadfile"
+
+    def test_zone_fallback_on_server_failure(self):
+        with patch(_MOCK_GET_SERVER, return_value=None):
+            url = _get_upload_url("eu")
+        assert url == "https://upload.gofile.io/uploadfile"
+
+    def test_zone_passed_to_upload(self, tmp_path: Path):
+        f = tmp_path / "test.zip"
+        f.write_bytes(b"data")
+
+        session = _mock_session(post_return=_mock_response(200, _success_json()))
+        with patch(_MOCK_SESSION, return_value=session), \
+             patch(_MOCK_GET_SERVER, return_value="store3"):
+            upload_to_gofile(f, zone="eu")
+
+        # Should have posted to the zone-specific URL
+        call_args = session.post.call_args
+        assert "store3.gofile.io" in call_args.args[0]

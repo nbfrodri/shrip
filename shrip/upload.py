@@ -9,9 +9,9 @@ from typing import Callable, Optional
 import requests
 from requests.adapters import HTTPAdapter
 from requests_toolbelt import MultipartEncoder, MultipartEncoderMonitor
-from urllib3.util.retry import Retry
 
 GOFILE_UPLOAD_URL = "https://upload.gofile.io/uploadfile"
+GOFILE_SERVERS_URL = "https://api.gofile.io/servers"
 CONNECT_TIMEOUT = 30  # seconds
 READ_TIMEOUT = 3600  # seconds (1 hour, supports multi-GB uploads)
 MAX_RETRIES = 3
@@ -38,8 +38,37 @@ def _create_session() -> requests.Session:
     return session
 
 
+def _get_server_for_zone(zone: str) -> Optional[str]:
+    """Query gofile.io for the best server in the given zone ('eu' or 'na')."""
+    try:
+        resp = requests.get(
+            GOFILE_SERVERS_URL,
+            params={"zone": zone},
+            timeout=(CONNECT_TIMEOUT, 30),
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            if data.get("status") == "ok":
+                servers = data.get("data", {}).get("servers", [])
+                if servers:
+                    return servers[0].get("name")
+    except (requests.RequestException, ValueError, KeyError):
+        pass
+    return None
+
+
+def _get_upload_url(zone: Optional[str]) -> str:
+    """Return the upload URL, optionally targeting a specific zone."""
+    if zone is not None:
+        server = _get_server_for_zone(zone)
+        if server:
+            return f"https://{server}.gofile.io/contents/uploadfile"
+    return GOFILE_UPLOAD_URL
+
+
 def upload_to_gofile(
     file_path: Path,
+    zone: Optional[str] = None,
     progress_callback: Optional[Callable[[int], None]] = None,
 ) -> str:
     """
@@ -49,6 +78,7 @@ def upload_to_gofile(
 
     Args:
         file_path: Path to the file to upload.
+        zone: Optional upload zone ('eu' or 'na') for server selection.
         progress_callback: Called with cumulative bytes sent after each chunk.
 
     Returns:
@@ -64,11 +94,12 @@ def upload_to_gofile(
     if file_size == 0:
         raise ValueError("Archive is empty, nothing to upload.")
 
+    upload_url = _get_upload_url(zone)
     last_error: Optional[Exception] = None
 
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            response = _do_upload(file_path, file_size, progress_callback)
+            response = _do_upload(file_path, file_size, upload_url, progress_callback)
             return _parse_response(response)
         except UploadError:
             raise
@@ -101,6 +132,7 @@ def upload_to_gofile(
 def _do_upload(
     file_path: Path,
     file_size: int,
+    upload_url: str,
     progress_callback: Optional[Callable[[int], None]],
 ) -> requests.Response:
     """Perform a single streaming upload attempt."""
@@ -126,7 +158,7 @@ def _do_upload(
         session = _create_session()
 
         return session.post(
-            GOFILE_UPLOAD_URL,
+            upload_url,
             data=monitor,
             headers={"Content-Type": monitor.content_type},
             timeout=(CONNECT_TIMEOUT, READ_TIMEOUT),
