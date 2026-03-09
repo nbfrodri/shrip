@@ -250,10 +250,12 @@ class TestProgressCallback:
         f = tmp_path / "three.txt"
         f.write_text("3")
 
-        called_with: list[Path] = []
-        zip_path = create_archive([d, f], "cb", progress_callback=called_with.append)
+        bytes_reported: list[int] = []
+        zip_path = create_archive([d, f], "cb", progress_callback=bytes_reported.append)
         try:
-            assert len(called_with) == 3
+            # Callback reports bytes; total should match input size
+            assert len(bytes_reported) >= 3  # at least one call per file
+            assert sum(bytes_reported) == 1 + 1 + 1  # "1" + "2" + "3" = 3 bytes
         finally:
             zip_path.unlink(missing_ok=True)
 

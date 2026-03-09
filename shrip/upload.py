@@ -2,37 +2,40 @@
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from typing import Callable, Optional
 
 import requests
+from requests.adapters import HTTPAdapter
+from requests_toolbelt import MultipartEncoder, MultipartEncoderMonitor
+from urllib3.util.retry import Retry
 
 GOFILE_UPLOAD_URL = "https://upload.gofile.io/uploadfile"
-CONNECT_TIMEOUT = 10  # seconds
-READ_TIMEOUT = 300  # seconds (5 min, generous for large files)
+CONNECT_TIMEOUT = 30  # seconds
+READ_TIMEOUT = 3600  # seconds (1 hour, supports multi-GB uploads)
+MAX_RETRIES = 3
+RETRY_BACKOFF = 5  # seconds between retries
+UPLOAD_BLOCKSIZE = 1024 * 1024  # 1 MiB — default is 8 KB, way too small for large files
 
 
 class UploadError(Exception):
     """Raised when the upload fails for any reason."""
 
 
-class _ProgressReader:
-    """Wraps a file object to track bytes read and call a progress callback."""
+class _LargeBlockAdapter(HTTPAdapter):
+    """HTTPAdapter that uses 1 MiB send blocks instead of the default 8 KB."""
 
-    def __init__(self, fileobj, total_size: int, callback: Callable[[int], None]):
-        self._fileobj = fileobj
-        self._total_size = total_size
-        self._bytes_read = 0
-        self._callback = callback
+    def init_poolmanager(self, connections, maxsize, block=False, **pool_kwargs):
+        pool_kwargs["blocksize"] = UPLOAD_BLOCKSIZE
+        super().init_poolmanager(connections, maxsize, block=block, **pool_kwargs)
 
-    def read(self, size: int = -1) -> bytes:
-        chunk = self._fileobj.read(size)
-        self._bytes_read += len(chunk)
-        self._callback(self._bytes_read)
-        return chunk
 
-    def __len__(self) -> int:
-        return self._total_size
+def _create_session() -> requests.Session:
+    """Create a requests Session with optimized settings for large uploads."""
+    session = requests.Session()
+    session.mount("https://", _LargeBlockAdapter())
+    return session
 
 
 def upload_to_gofile(
@@ -41,6 +44,8 @@ def upload_to_gofile(
 ) -> str:
     """
     Upload a file to gofile.io and return the download page URL.
+
+    Uses streaming multipart upload to avoid loading the entire file into memory.
 
     Args:
         file_path: Path to the file to upload.
@@ -59,29 +64,77 @@ def upload_to_gofile(
     if file_size == 0:
         raise ValueError("Archive is empty, nothing to upload.")
 
-    try:
-        with open(file_path, "rb") as f:
-            if progress_callback is not None:
-                reader = _ProgressReader(f, file_size, progress_callback)
-                files = {"file": (file_path.name, reader)}
-            else:
-                files = {"file": (file_path.name, f)}
+    last_error: Optional[Exception] = None
 
-            response = requests.post(
-                GOFILE_UPLOAD_URL,
-                files=files,
-                timeout=(CONNECT_TIMEOUT, READ_TIMEOUT),
-            )
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            response = _do_upload(file_path, file_size, progress_callback)
+            return _parse_response(response)
+        except UploadError:
+            raise
+        except requests.exceptions.SSLError as e:
+            raise UploadError(
+                "SSL verification failed when connecting to gofile.io."
+            ) from e
+        except requests.exceptions.Timeout as e:
+            last_error = e
+            if attempt == MAX_RETRIES:
+                raise UploadError(
+                    "Upload timed out — check your connection and try again."
+                ) from e
+        except requests.exceptions.ConnectionError as e:
+            last_error = e
+            if attempt == MAX_RETRIES:
+                raise UploadError(
+                    "Could not reach gofile.io — check your internet connection."
+                ) from e
+        except requests.exceptions.RequestException as e:
+            raise UploadError(f"Upload failed: {e}") from e
 
-    except requests.exceptions.SSLError as e:
-        raise UploadError("SSL verification failed when connecting to gofile.io.") from e
-    except requests.exceptions.Timeout as e:
-        raise UploadError("Upload timed out — check your connection and try again.") from e
-    except requests.exceptions.ConnectionError as e:
-        raise UploadError("Could not reach gofile.io — check your internet connection.") from e
-    except requests.exceptions.RequestException as e:
-        raise UploadError(f"Upload failed: {e}") from e
+        # Retry after backoff
+        time.sleep(RETRY_BACKOFF * attempt)
 
+    # Should never reach here, but just in case
+    raise UploadError(f"Upload failed after {MAX_RETRIES} attempts: {last_error}")
+
+
+def _do_upload(
+    file_path: Path,
+    file_size: int,
+    progress_callback: Optional[Callable[[int], None]],
+) -> requests.Response:
+    """Perform a single streaming upload attempt."""
+    with open(file_path, "rb") as f:
+        encoder = MultipartEncoder(
+            fields={"file": (file_path.name, f, "application/octet-stream")}
+        )
+
+        if progress_callback is not None:
+            # Throttle callback to ~10 updates/sec to avoid overhead on large files
+            last_update = [0.0]
+
+            def _throttled_callback(monitor: MultipartEncoderMonitor) -> None:
+                now = time.monotonic()
+                if now - last_update[0] >= 0.1 or monitor.bytes_read >= monitor.len:
+                    progress_callback(monitor.bytes_read)
+                    last_update[0] = now
+
+            monitor = MultipartEncoderMonitor(encoder, _throttled_callback)
+        else:
+            monitor = MultipartEncoderMonitor(encoder)
+
+        session = _create_session()
+
+        return session.post(
+            GOFILE_UPLOAD_URL,
+            data=monitor,
+            headers={"Content-Type": monitor.content_type},
+            timeout=(CONNECT_TIMEOUT, READ_TIMEOUT),
+        )
+
+
+def _parse_response(response: requests.Response) -> str:
+    """Parse and validate the gofile.io API response."""
     if response.status_code == 429:
         raise UploadError("Rate limited by gofile.io — wait a moment and try again.")
     if response.status_code >= 500:

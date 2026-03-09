@@ -17,6 +17,7 @@ from rich.progress import (
     DownloadColumn,
     Progress,
     SpinnerColumn,
+    TaskProgressColumn,
     TextColumn,
     TransferSpeedColumn,
 )
@@ -185,13 +186,14 @@ def main(
             SpinnerColumn(),
             TextColumn("[progress.description]{task.description}"),
             BarColumn(),
-            TextColumn("{task.completed}/{task.total} files"),
+            TaskProgressColumn(),
+            DownloadColumn(),
             console=console,
         ) as progress:
-            task = progress.add_task("Compressing", total=total_files)
+            task = progress.add_task("Compressing", total=input_size)
 
-            def on_file_compressed(file_path: Path) -> None:
-                progress.advance(task)
+            def on_file_compressed(bytes_written: int) -> None:
+                progress.advance(task, advance=bytes_written)
 
             zip_path = create_archive(paths, name, progress_callback=on_file_compressed)
 
@@ -214,7 +216,7 @@ def main(
             task = progress.add_task("Uploading", total=zip_size)
 
             def on_bytes_sent(cumulative: int) -> None:
-                progress.update(task, completed=cumulative)
+                progress.update(task, completed=min(cumulative, zip_size))
 
             download_url = upload_to_gofile(zip_path, progress_callback=on_bytes_sent)
 

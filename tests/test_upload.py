@@ -10,6 +10,8 @@ import requests
 
 from shrip.upload import UploadError, upload_to_gofile
 
+_MOCK_SESSION = "shrip.upload._create_session"
+
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -38,6 +40,16 @@ def _success_json(url: str = "https://gofile.io/d/AbCd123") -> dict:
     }
 
 
+def _mock_session(post_return=None, post_side_effect=None):
+    """Create a mock session whose .post() is controlled."""
+    session = MagicMock()
+    if post_side_effect is not None:
+        session.post.side_effect = post_side_effect
+    elif post_return is not None:
+        session.post.return_value = post_return
+    return session
+
+
 # ── Success cases ────────────────────────────────────────────────────────────
 
 
@@ -46,8 +58,8 @@ class TestUploadSuccess:
         f = tmp_path / "test.zip"
         f.write_bytes(b"fake zip content")
 
-        with patch("shrip.upload.requests.post") as mock_post:
-            mock_post.return_value = _mock_response(200, _success_json())
+        session = _mock_session(post_return=_mock_response(200, _success_json()))
+        with patch(_MOCK_SESSION, return_value=session):
             url = upload_to_gofile(f)
 
         assert url == "https://gofile.io/d/AbCd123"
@@ -56,17 +68,17 @@ class TestUploadSuccess:
         f = tmp_path / "archive.zip"
         f.write_bytes(b"data")
 
-        with patch("shrip.upload.requests.post") as mock_post:
-            mock_post.return_value = _mock_response(200, _success_json())
+        session = _mock_session(post_return=_mock_response(200, _success_json()))
+        with patch(_MOCK_SESSION, return_value=session):
             upload_to_gofile(f)
 
-        mock_post.assert_called_once()
-        call_kwargs = mock_post.call_args
-        assert call_kwargs.kwargs["timeout"] == (10, 300)
-        # files arg should contain a tuple with the filename
-        files_arg = call_kwargs.kwargs["files"]
-        assert "file" in files_arg
-        assert files_arg["file"][0] == "archive.zip"
+        session.post.assert_called_once()
+        call_kwargs = session.post.call_args
+        assert call_kwargs.kwargs["timeout"] == (30, 3600)
+        # Streaming upload uses data= with MultipartEncoderMonitor
+        assert "data" in call_kwargs.kwargs
+        assert "Content-Type" in call_kwargs.kwargs["headers"]
+        assert "multipart/form-data" in call_kwargs.kwargs["headers"]["Content-Type"]
 
     def test_progress_callback_is_called(self, tmp_path: Path):
         f = tmp_path / "test.zip"
@@ -74,24 +86,22 @@ class TestUploadSuccess:
 
         callback_values: list[int] = []
 
-        def fake_post(url, files, timeout):
-            """Simulate requests.post by reading the file object, triggering the progress wrapper."""
-            file_tuple = files["file"]
-            reader = file_tuple[1]
-            # Read all content like requests would
+        def fake_post(url, data, headers, timeout):
+            """Simulate session.post by reading the encoder to trigger progress."""
             while True:
-                chunk = reader.read(32)
+                chunk = data.read(32)
                 if not chunk:
                     break
             return _mock_response(200, _success_json())
 
-        with patch("shrip.upload.requests.post", side_effect=fake_post):
+        session = _mock_session(post_side_effect=fake_post)
+        with patch(_MOCK_SESSION, return_value=session):
             upload_to_gofile(f, progress_callback=callback_values.append)
 
         # Callback should have been called at least once
         assert len(callback_values) > 0
-        # Final value should equal file size
-        assert callback_values[-1] == 100
+        # Final value should be >= file size (includes multipart boundary overhead)
+        assert callback_values[-1] >= 100
 
 
 # ── Empty file ───────────────────────────────────────────────────────────────
@@ -110,21 +120,23 @@ class TestEmptyFile:
 
 
 class TestNetworkErrors:
+    @patch("shrip.upload.RETRY_BACKOFF", 0)
     def test_connection_error(self, tmp_path: Path):
         f = tmp_path / "test.zip"
         f.write_bytes(b"data")
 
-        with patch("shrip.upload.requests.post") as mock_post:
-            mock_post.side_effect = requests.exceptions.ConnectionError()
+        session = _mock_session(post_side_effect=requests.exceptions.ConnectionError())
+        with patch(_MOCK_SESSION, return_value=session):
             with pytest.raises(UploadError, match="Could not reach gofile.io"):
                 upload_to_gofile(f)
 
+    @patch("shrip.upload.RETRY_BACKOFF", 0)
     def test_timeout(self, tmp_path: Path):
         f = tmp_path / "test.zip"
         f.write_bytes(b"data")
 
-        with patch("shrip.upload.requests.post") as mock_post:
-            mock_post.side_effect = requests.exceptions.Timeout()
+        session = _mock_session(post_side_effect=requests.exceptions.Timeout())
+        with patch(_MOCK_SESSION, return_value=session):
             with pytest.raises(UploadError, match="timed out"):
                 upload_to_gofile(f)
 
@@ -132,8 +144,8 @@ class TestNetworkErrors:
         f = tmp_path / "test.zip"
         f.write_bytes(b"data")
 
-        with patch("shrip.upload.requests.post") as mock_post:
-            mock_post.side_effect = requests.exceptions.SSLError()
+        session = _mock_session(post_side_effect=requests.exceptions.SSLError())
+        with patch(_MOCK_SESSION, return_value=session):
             with pytest.raises(UploadError, match="SSL"):
                 upload_to_gofile(f)
 
@@ -141,10 +153,63 @@ class TestNetworkErrors:
         f = tmp_path / "test.zip"
         f.write_bytes(b"data")
 
-        with patch("shrip.upload.requests.post") as mock_post:
-            mock_post.side_effect = requests.exceptions.RequestException("something broke")
+        session = _mock_session(
+            post_side_effect=requests.exceptions.RequestException("something broke")
+        )
+        with patch(_MOCK_SESSION, return_value=session):
             with pytest.raises(UploadError, match="something broke"):
                 upload_to_gofile(f)
+
+
+# ── Retry logic ──────────────────────────────────────────────────────────────
+
+
+class TestRetryLogic:
+    @patch("shrip.upload.RETRY_BACKOFF", 0)
+    def test_retries_on_connection_error_then_succeeds(self, tmp_path: Path):
+        f = tmp_path / "test.zip"
+        f.write_bytes(b"data")
+
+        session = _mock_session(
+            post_side_effect=[
+                requests.exceptions.ConnectionError(),
+                _mock_response(200, _success_json()),
+            ]
+        )
+        with patch(_MOCK_SESSION, return_value=session):
+            url = upload_to_gofile(f)
+
+        assert url == "https://gofile.io/d/AbCd123"
+        assert session.post.call_count == 2
+
+    @patch("shrip.upload.RETRY_BACKOFF", 0)
+    def test_retries_on_timeout_then_succeeds(self, tmp_path: Path):
+        f = tmp_path / "test.zip"
+        f.write_bytes(b"data")
+
+        session = _mock_session(
+            post_side_effect=[
+                requests.exceptions.Timeout(),
+                _mock_response(200, _success_json()),
+            ]
+        )
+        with patch(_MOCK_SESSION, return_value=session):
+            url = upload_to_gofile(f)
+
+        assert url == "https://gofile.io/d/AbCd123"
+        assert session.post.call_count == 2
+
+    @patch("shrip.upload.RETRY_BACKOFF", 0)
+    def test_exhausts_retries(self, tmp_path: Path):
+        f = tmp_path / "test.zip"
+        f.write_bytes(b"data")
+
+        session = _mock_session(post_side_effect=requests.exceptions.ConnectionError())
+        with patch(_MOCK_SESSION, return_value=session):
+            with pytest.raises(UploadError, match="Could not reach gofile.io"):
+                upload_to_gofile(f)
+
+        assert session.post.call_count == 3  # MAX_RETRIES
 
 
 # ── HTTP status errors ───────────────────────────────────────────────────────
@@ -155,8 +220,8 @@ class TestHTTPErrors:
         f = tmp_path / "test.zip"
         f.write_bytes(b"data")
 
-        with patch("shrip.upload.requests.post") as mock_post:
-            mock_post.return_value = _mock_response(429)
+        session = _mock_session(post_return=_mock_response(429))
+        with patch(_MOCK_SESSION, return_value=session):
             with pytest.raises(UploadError, match="Rate limited"):
                 upload_to_gofile(f)
 
@@ -164,8 +229,8 @@ class TestHTTPErrors:
         f = tmp_path / "test.zip"
         f.write_bytes(b"data")
 
-        with patch("shrip.upload.requests.post") as mock_post:
-            mock_post.return_value = _mock_response(500)
+        session = _mock_session(post_return=_mock_response(500))
+        with patch(_MOCK_SESSION, return_value=session):
             with pytest.raises(UploadError, match="temporarily unavailable"):
                 upload_to_gofile(f)
 
@@ -173,8 +238,8 @@ class TestHTTPErrors:
         f = tmp_path / "test.zip"
         f.write_bytes(b"data")
 
-        with patch("shrip.upload.requests.post") as mock_post:
-            mock_post.return_value = _mock_response(503)
+        session = _mock_session(post_return=_mock_response(503))
+        with patch(_MOCK_SESSION, return_value=session):
             with pytest.raises(UploadError, match="temporarily unavailable"):
                 upload_to_gofile(f)
 
@@ -182,8 +247,8 @@ class TestHTTPErrors:
         f = tmp_path / "test.zip"
         f.write_bytes(b"data")
 
-        with patch("shrip.upload.requests.post") as mock_post:
-            mock_post.return_value = _mock_response(403)
+        session = _mock_session(post_return=_mock_response(403))
+        with patch(_MOCK_SESSION, return_value=session):
             with pytest.raises(UploadError, match="HTTP 403"):
                 upload_to_gofile(f)
 
@@ -196,8 +261,8 @@ class TestMalformedResponses:
         f = tmp_path / "test.zip"
         f.write_bytes(b"data")
 
-        with patch("shrip.upload.requests.post") as mock_post:
-            mock_post.return_value = _mock_response(200, bad_json=True)
+        session = _mock_session(post_return=_mock_response(200, bad_json=True))
+        with patch(_MOCK_SESSION, return_value=session):
             with pytest.raises(UploadError, match="Invalid response"):
                 upload_to_gofile(f)
 
@@ -206,8 +271,8 @@ class TestMalformedResponses:
         f.write_bytes(b"data")
 
         body = {"status": "error", "data": {"message": "file too large"}}
-        with patch("shrip.upload.requests.post") as mock_post:
-            mock_post.return_value = _mock_response(200, body)
+        session = _mock_session(post_return=_mock_response(200, body))
+        with patch(_MOCK_SESSION, return_value=session):
             with pytest.raises(UploadError, match="file too large"):
                 upload_to_gofile(f)
 
@@ -216,8 +281,8 @@ class TestMalformedResponses:
         f.write_bytes(b"data")
 
         body = {"status": "error"}
-        with patch("shrip.upload.requests.post") as mock_post:
-            mock_post.return_value = _mock_response(200, body)
+        session = _mock_session(post_return=_mock_response(200, body))
+        with patch(_MOCK_SESSION, return_value=session):
             with pytest.raises(UploadError, match="error"):
                 upload_to_gofile(f)
 
@@ -226,8 +291,8 @@ class TestMalformedResponses:
         f.write_bytes(b"data")
 
         body = {"status": "ok"}
-        with patch("shrip.upload.requests.post") as mock_post:
-            mock_post.return_value = _mock_response(200, body)
+        session = _mock_session(post_return=_mock_response(200, body))
+        with patch(_MOCK_SESSION, return_value=session):
             with pytest.raises(UploadError, match="API may have changed"):
                 upload_to_gofile(f)
 
@@ -236,8 +301,8 @@ class TestMalformedResponses:
         f.write_bytes(b"data")
 
         body = {"status": "ok", "data": "unexpected string"}
-        with patch("shrip.upload.requests.post") as mock_post:
-            mock_post.return_value = _mock_response(200, body)
+        session = _mock_session(post_return=_mock_response(200, body))
+        with patch(_MOCK_SESSION, return_value=session):
             with pytest.raises(UploadError, match="API may have changed"):
                 upload_to_gofile(f)
 
@@ -246,7 +311,7 @@ class TestMalformedResponses:
         f.write_bytes(b"data")
 
         body = {"status": "ok", "data": {"code": "abc", "fileName": "test.zip"}}
-        with patch("shrip.upload.requests.post") as mock_post:
-            mock_post.return_value = _mock_response(200, body)
+        session = _mock_session(post_return=_mock_response(200, body))
+        with patch(_MOCK_SESSION, return_value=session):
             with pytest.raises(UploadError, match="API may have changed"):
                 upload_to_gofile(f)

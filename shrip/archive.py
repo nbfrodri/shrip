@@ -101,10 +101,13 @@ def _deduplicate_arcname(arcname: str, seen: dict[str, int]) -> str:
     return _deduplicate_arcname(new_name, seen)
 
 
+_CHUNK_SIZE = 1024 * 1024  # 1 MiB chunks for progress reporting
+
+
 def create_archive(
     paths: list[Path],
     name: str = "shrip_archive",
-    progress_callback: Optional[Callable[[Path], None]] = None,
+    progress_callback: Optional[Callable[[int], None]] = None,
 ) -> Path:
     """
     Create a temporary .zip archive containing all provided files and directories.
@@ -112,7 +115,7 @@ def create_archive(
     Args:
         paths: Files and/or directories to include.
         name: Archive base name (without .zip). Sanitized automatically.
-        progress_callback: Called with each file path after it is added to the archive.
+        progress_callback: Called with the number of bytes just compressed.
 
     Returns:
         Path to the created temporary zip file.
@@ -149,14 +152,31 @@ def create_archive(
                     # Empty directory entry — use ZipInfo for Python 3.9/3.10 compat
                     zf.writestr(zipfile.ZipInfo(arcname), "")
                 else:
-                    zf.write(file_path, arcname)
-                if progress_callback is not None:
-                    progress_callback(file_path)
+                    _write_file_chunked(zf, file_path, arcname, progress_callback)
         return tmp_path
     except Exception:
         # Cleanup on failure
         tmp_path.unlink(missing_ok=True)
         raise
+
+
+def _write_file_chunked(
+    zf: zipfile.ZipFile,
+    file_path: Path,
+    arcname: str,
+    progress_callback: Optional[Callable[[int], None]],
+) -> None:
+    """Write a file into the zip archive in chunks, reporting progress."""
+    zinfo = zipfile.ZipInfo.from_file(file_path, arcname)
+    zinfo.compress_type = zipfile.ZIP_DEFLATED
+    with zf.open(zinfo, "w") as dest, open(file_path, "rb") as src:
+        while True:
+            chunk = src.read(_CHUNK_SIZE)
+            if not chunk:
+                break
+            dest.write(chunk)
+            if progress_callback is not None:
+                progress_callback(len(chunk))
 
 
 def _is_readable(path: Path) -> bool:
