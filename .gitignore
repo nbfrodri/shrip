@@ -34,5 +34,4 @@ env/
 # Project internal
 CLAUDE.md
 /docs/
-/tests/
 /.claude/
