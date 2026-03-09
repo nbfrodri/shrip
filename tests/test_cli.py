@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
-import pytest
 from typer.testing import CliRunner
 
 from shrip.cli import app, _human_size
@@ -99,7 +98,7 @@ class TestSuccessfulRun:
         d.mkdir()
         (d / "file.txt").write_text("content")
 
-        with _mock_archive(tmp_path) as mock_arc, _mock_upload():
+        with _mock_archive(tmp_path), _mock_upload():
             result = runner.invoke(app, [str(d)])
 
         assert result.exit_code == 0
@@ -179,9 +178,12 @@ class TestUploadErrors:
         f = tmp_path / "data.txt"
         f.write_text("data")
 
-        with _mock_archive(tmp_path), patch(
-            "shrip.cli.upload_to_gofile",
-            side_effect=UploadError("Could not reach gofile.io"),
+        with (
+            _mock_archive(tmp_path),
+            patch(
+                "shrip.cli.upload_to_gofile",
+                side_effect=UploadError("Could not reach gofile.io"),
+            ),
         ):
             result = runner.invoke(app, [str(f)])
 
@@ -226,9 +228,12 @@ class TestCleanup:
         fake_zip = tmp_path / ".shrip_cleanup_error.zip"
         fake_zip.write_bytes(b"PK fake")
 
-        with patch("shrip.cli.create_archive", return_value=fake_zip), patch(
-            "shrip.cli.upload_to_gofile",
-            side_effect=UploadError("Network failure"),
+        with (
+            patch("shrip.cli.create_archive", return_value=fake_zip),
+            patch(
+                "shrip.cli.upload_to_gofile",
+                side_effect=UploadError("Network failure"),
+            ),
         ):
             result = runner.invoke(app, [str(f)])
 
@@ -242,11 +247,14 @@ class TestCleanup:
         fake_zip = tmp_path / ".shrip_cleanup_interrupt.zip"
         fake_zip.write_bytes(b"PK fake")
 
-        with patch("shrip.cli.create_archive", return_value=fake_zip), patch(
-            "shrip.cli.upload_to_gofile",
-            side_effect=KeyboardInterrupt,
+        with (
+            patch("shrip.cli.create_archive", return_value=fake_zip),
+            patch(
+                "shrip.cli.upload_to_gofile",
+                side_effect=KeyboardInterrupt,
+            ),
         ):
-            result = runner.invoke(app, [str(f)])
+            runner.invoke(app, [str(f)])
 
         assert not fake_zip.exists(), "Temp zip should be deleted after Ctrl+C"
 
@@ -259,9 +267,11 @@ class TestCopyFlag:
         f = tmp_path / "data.txt"
         f.write_text("data")
 
-        with _mock_archive(tmp_path), _mock_upload(), patch(
-            "shrip.cli._copy_to_clipboard", return_value=True
-        ) as mock_clip:
+        with (
+            _mock_archive(tmp_path),
+            _mock_upload(),
+            patch("shrip.cli._copy_to_clipboard", return_value=True) as mock_clip,
+        ):
             result = runner.invoke(app, [str(f), "--copy"])
 
         assert result.exit_code == 0
@@ -272,8 +282,10 @@ class TestCopyFlag:
         f = tmp_path / "data.txt"
         f.write_text("data")
 
-        with _mock_archive(tmp_path), _mock_upload(), patch(
-            "shrip.cli._copy_to_clipboard", return_value=True
+        with (
+            _mock_archive(tmp_path),
+            _mock_upload(),
+            patch("shrip.cli._copy_to_clipboard", return_value=True),
         ):
             result = runner.invoke(app, [str(f), "-c"])
 
@@ -283,9 +295,11 @@ class TestCopyFlag:
         f = tmp_path / "data.txt"
         f.write_text("data")
 
-        with _mock_archive(tmp_path), _mock_upload(), patch(
-            "shrip.cli._copy_to_clipboard"
-        ) as mock_clip:
+        with (
+            _mock_archive(tmp_path),
+            _mock_upload(),
+            patch("shrip.cli._copy_to_clipboard") as mock_clip,
+        ):
             result = runner.invoke(app, [str(f)])
 
         assert result.exit_code == 0
@@ -300,9 +314,11 @@ class TestOpenFlag:
         f = tmp_path / "data.txt"
         f.write_text("data")
 
-        with _mock_archive(tmp_path), _mock_upload(), patch(
-            "shrip.cli.webbrowser.open"
-        ) as mock_open:
+        with (
+            _mock_archive(tmp_path),
+            _mock_upload(),
+            patch("shrip.cli.webbrowser.open") as mock_open,
+        ):
             result = runner.invoke(app, [str(f), "--open"])
 
         assert result.exit_code == 0
@@ -312,9 +328,11 @@ class TestOpenFlag:
         f = tmp_path / "data.txt"
         f.write_text("data")
 
-        with _mock_archive(tmp_path), _mock_upload(), patch(
-            "shrip.cli.webbrowser.open"
-        ) as mock_open:
+        with (
+            _mock_archive(tmp_path),
+            _mock_upload(),
+            patch("shrip.cli.webbrowser.open") as mock_open,
+        ):
             result = runner.invoke(app, [str(f)])
 
         assert result.exit_code == 0

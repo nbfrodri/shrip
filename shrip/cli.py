@@ -1,13 +1,11 @@
 """CLI entry point — Typer app with Rich progress bars."""
 
-from __future__ import annotations
-
 import platform
 import shutil
 import subprocess
 import webbrowser
 from pathlib import Path
-from typing import Annotated, Optional
+from typing import Annotated, List, Optional, Union
 
 import typer
 from rich.console import Console
@@ -80,7 +78,7 @@ def _copy_to_clipboard(text: str) -> bool:
     return False
 
 
-def _total_input_size(paths: list[Path]) -> int:
+def _total_input_size(paths: List[Path]) -> int:
     """Sum the size of all input files (recursing into directories)."""
     total = 0
     for p in paths:
@@ -106,7 +104,7 @@ def _version_callback(value: bool) -> None:
 @app.command()
 def main(
     paths: Annotated[
-        list[Path],
+        List[Path],
         typer.Argument(help="Files and/or folders to share."),
     ],
     name: Annotated[
@@ -150,7 +148,7 @@ def main(
     item_label = "item" if item_count == 1 else "items"
     input_size = _total_input_size(paths)
 
-    zip_path: Path | None = None
+    zip_path: Union[Path, None] = None
     try:
         # ── Compress ─────────────────────────────────────────────────
         total_files = 0
