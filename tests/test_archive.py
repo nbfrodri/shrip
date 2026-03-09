@@ -311,3 +311,37 @@ class TestSymlinks:
             assert "proj/escape.txt" not in names
         finally:
             zip_path.unlink(missing_ok=True)
+
+
+# ── Security: arcname safety ────────────────────────────────────────────────
+
+
+class TestArcnameSecurity:
+    def test_no_arcname_starts_with_slash(self, tmp_path: Path):
+        d = tmp_path / "mydir"
+        (d / "sub").mkdir(parents=True)
+        (d / "sub" / "file.txt").write_text("data")
+        (d / "top.txt").write_text("top")
+
+        zip_path = create_archive([d], "sec")
+        try:
+            names = _zip_names(zip_path)
+            for name in names:
+                assert not name.startswith("/"), f"arcname starts with /: {name}"
+                assert ".." not in name, f"arcname contains ..: {name}"
+        finally:
+            zip_path.unlink(missing_ok=True)
+
+    def test_no_arcname_contains_dotdot(self, tmp_path: Path):
+        """Ensure deeply nested dirs never produce .. in arcnames."""
+        d = tmp_path / "root"
+        (d / "a" / "b" / "c").mkdir(parents=True)
+        (d / "a" / "b" / "c" / "deep.txt").write_text("deep")
+
+        zip_path = create_archive([d], "deep")
+        try:
+            names = _zip_names(zip_path)
+            for name in names:
+                assert ".." not in name, f"arcname contains ..: {name}"
+        finally:
+            zip_path.unlink(missing_ok=True)

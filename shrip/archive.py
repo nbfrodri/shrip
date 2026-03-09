@@ -85,7 +85,11 @@ def _deduplicate_arcname(arcname: str, seen: dict[str, int]) -> str:
         return arcname
     seen[arcname] += 1
     stem = Path(arcname)
-    new_name = f"{stem.parent}/{stem.stem}_{seen[arcname]}{stem.suffix}" if str(stem.parent) != "." else f"{stem.stem}_{seen[arcname]}{stem.suffix}"
+    new_name = (
+        f"{stem.parent}/{stem.stem}_{seen[arcname]}{stem.suffix}"
+        if str(stem.parent) != "."
+        else f"{stem.stem}_{seen[arcname]}{stem.suffix}"
+    )
     # Recurse in case the new name also collides
     return _deduplicate_arcname(new_name, seen)
 
@@ -127,9 +131,7 @@ def create_archive(
     if not entries:
         raise ValueError("No files found to archive.")
 
-    tmp = tempfile.NamedTemporaryFile(
-        delete=False, suffix=".zip", prefix=f".shrip_{safe_name}_"
-    )
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".zip", prefix=f".shrip_{safe_name}_")
     tmp_path = Path(tmp.name)
     tmp.close()
 

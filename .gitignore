@@ -1,19 +1,37 @@
+# Python
 __pycache__/
 *.py[cod]
 *.egg-info/
-dist/
-build/
 *.egg
 .eggs/
 *.whl
+
+# Build & dist
+dist/
+build/
+
+# Virtual environments
 .venv/
 venv/
 env/
 .env
-.shrip_*.zip
-*.zip
+
+# Tools cache
 .ruff_cache/
 .pytest_cache/
 .mypy_cache/
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Temp archives
+.shrip_*.zip
+
+# Project internal
 CLAUDE.md
 /docs/
+/tests/
