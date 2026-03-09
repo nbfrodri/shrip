@@ -1,26 +1,30 @@
 # shrip
 
-Zip and share files from the terminal — no browser needed.
+**Zip and share files from the terminal — no browser needed.**
 
-`shrip` bundles files and folders into a compressed archive and uploads it to [gofile.io](https://gofile.io), giving you a temporary public download link instantly.
+`shrip` bundles files and folders into a compressed archive and uploads it to [gofile.io](https://gofile.io), giving you a temporary public download link instantly. No accounts, no configuration, no context-switching.
 
 ## Installation
+
+**From PyPI (recommended):**
 
 ```bash
 pip install shrip
 ```
 
-Or with [pipx](https://pipx.pypa.io/) for an isolated install:
+**With [pipx](https://pipx.pypa.io/) (isolated install):**
 
 ```bash
 pipx install shrip
 ```
 
-Or directly from GitHub:
+**From GitHub:**
 
 ```bash
 pip install git+https://github.com/nbfrodri/shrip.git
 ```
+
+> Requires Python 3.9 or higher. Works on Windows, macOS, and Linux.
 
 ## Usage
 
@@ -38,11 +42,10 @@ shrip ./build/ -n release-v2
 **Example output:**
 
 ```
-Validating paths...
 Compressing 3 items into project-handover.zip...
-[####################################] 100%
+⠋ Compressing ████████████████████████████████████ 3/3 files
 Uploading to gofile.io...
-[####################################] 100%
+⠋ Uploading   ████████████████████████████████████ 1.2/1.2 MB  850.3 kB/s
 
 Success! Your file is live:
 https://gofile.io/d/AbCd123
@@ -52,23 +55,19 @@ https://gofile.io/d/AbCd123
 
 ## Options
 
-| Flag        | Short | Description                          | Default         |
-| ----------- | ----- | ------------------------------------ | --------------- |
-| `--name`    | `-n`  | Custom archive name (without `.zip`) | `shrip_archive` |
-| `--version` | `-v`  | Show version and exit                |                 |
-| `--help`    |       | Show usage help                      |                 |
+| Flag | Short | Description | Default |
+|------|-------|-------------|---------|
+| `--name` | `-n` | Custom archive name (without `.zip`) | `shrip_archive` |
+| `--version` | `-v` | Show version and exit | |
+| `--help` | | Show usage help | |
 
 ## How It Works
 
 1. Validates that all provided paths exist.
-2. Compresses everything into a temporary `.zip` archive (directories are walked recursively, preserving folder structure).
-3. Uploads the archive to [gofile.io](https://gofile.io) (anonymous, no account needed).
-4. Returns the download URL.
-5. Deletes the temporary zip file automatically.
-
-## Requirements
-
-- Python 3.9+
+2. Compresses everything into a temporary `.zip` archive — directories are walked recursively, preserving folder structure.
+3. Uploads the archive to [gofile.io](https://gofile.io) (anonymous, no account needed, no file size limit).
+4. Prints the download URL.
+5. Deletes the temporary zip file automatically — even if the upload fails or you hit Ctrl+C.
 
 ## License
 

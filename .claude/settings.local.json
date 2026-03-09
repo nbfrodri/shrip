@@ -10,7 +10,8 @@
       "WebFetch(domain:raw.githubusercontent.com)",
       "WebFetch(domain:medium.com)",
       "Bash(pip install:*)",
-      "Bash(python:*)"
+      "Bash(python:*)",
+      "Bash(rm:*)"
     ]
   }
 }
